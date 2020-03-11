@@ -1,13 +1,17 @@
 import org.json.simple.*;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
-
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+import org.opencv.imgcodecs.Imgcodecs;
+import org.opencv.imgproc.Imgproc;
+import org.opencv.core.Core;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Scanner;
+import java.util.*;
+import java.nio.ByteBuffer;
 
 class Product
 {
@@ -25,7 +29,7 @@ class Product
         right = r;
         bottom = b;
     }
-};
+}
 
 
 class Shelf
@@ -49,7 +53,7 @@ class Shelf
     {
         products.add(p);
     }
-};
+}
 
 
 public class PlanogramMeasurement {
@@ -131,5 +135,28 @@ public class PlanogramMeasurement {
             }
             shelves.add(shelf);
         }
+    }
+
+    private void createColorDictionary(HashSet<Long> idSet)
+    {
+        HashSet<ByteBuffer> colorSet = new HashSet<>();
+        Dictionary<Long, ByteBuffer> colorDictionary = new Hashtable<>();
+        for(Long id: idSet)
+        {
+            while (true)
+            {
+                byte [] colorArray = {(byte)(255.0 * Math.random()),
+                                      (byte)(255.0 * Math.random()),
+                                      (byte)(255.0 * Math.random())};
+                var colorBuffer = ByteBuffer.wrap(colorArray);
+                if (!colorSet.contains(colorBuffer))
+                {
+                    colorSet.add(colorBuffer);
+                    colorDictionary.put(id, colorBuffer);
+                    break;
+                }
+            }
+        }
+
     }
 }
