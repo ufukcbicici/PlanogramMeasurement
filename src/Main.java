@@ -15,6 +15,8 @@ public class Main
 //        int x = 42;
 
         PlanogramMeasurement planogramMeasurement = new PlanogramMeasurement("src//planogram.json");
+        var detections_json = PlanogramMeasurement.readJsonFromFile("src//detections_IMG_43699.json");
+        planogramMeasurement.measurePlanogramCompliance(detections_json);
         int x = 42;
 
     }

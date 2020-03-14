@@ -74,11 +74,17 @@ public class PlanogramMeasurement {
 
     public PlanogramMeasurement(String planogram_file_path)
     {
-        planogramJson = readJsonFromFile(planogram_file_path);
+        planogramJson = PlanogramMeasurement.readJsonFromFile(planogram_file_path);
         interpretPlanogramJson();
     }
 
-    public JSONObject readJsonFromFile(String json_path)
+    public void measurePlanogramCompliance(JSONObject detectionsJson)
+    {
+        List<Product> detectedProductsList = interpretDetectionsJson(detectionsJson);
+        System.out.println("X");
+    }
+
+    public static JSONObject readJsonFromFile(String json_path)
     {
         JSONObject jsonObject = null;
         // Read Planogram Json as Text File
@@ -135,6 +141,28 @@ public class PlanogramMeasurement {
             }
             shelves.add(shelf);
         }
+    }
+
+    private List<Product> interpretDetectionsJson(JSONObject detectionsJsonObject)
+    {
+        List<Product> detectedProductsList = new ArrayList<>();
+        long imageWidth = (long)detectionsJsonObject.get("image_width");
+        long imageHeight = (long)detectionsJsonObject.get("image_height");
+        JSONArray productsInShelf = (JSONArray)detectionsJsonObject.get("detections");
+        for(Object pObj: productsInShelf)
+        {
+            //{"class": 37, "left": 825.5088559985161, "top": 1742.5092352628708, "right": 966.3706343173981, "bottom": 2194.6446303129196}
+            JSONObject productObj = (JSONObject) pObj;
+            var product_left = (double) productObj.get("left");
+            var product_top = (double) productObj.get("top");
+            var product_right = (double) productObj.get("right");
+            var product_bottom = (double) productObj.get("bottom");
+            var product_label = (long) productObj.get("class");
+            var product = new Product(product_label, (long)product_left, (long)product_top,
+                    (long)product_right, (long)product_bottom);
+            detectedProductsList.add(product);
+        }
+        return detectedProductsList;
     }
 
     private void createColorDictionary(HashSet<Long> idSet)
