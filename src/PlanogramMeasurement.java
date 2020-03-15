@@ -1,15 +1,17 @@
 import org.json.simple.*;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
-import org.opencv.core.CvType;
-import org.opencv.core.Mat;
+import org.opencv.calib3d.Calib3d;
+import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
-import org.opencv.core.Core;
+
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.DoubleBuffer;
+import java.nio.IntBuffer;
 import java.util.*;
 import java.nio.ByteBuffer;
 
@@ -29,6 +31,26 @@ class Product
         right = r;
         bottom = b;
     }
+
+    public long getLabel() {
+        return label;
+    }
+
+    public long getLeft() {
+        return left;
+    }
+
+    public long getTop() {
+        return top;
+    }
+
+    public long getRight() {
+        return right;
+    }
+
+    public long getBottom() {
+        return bottom;
+    }
 }
 
 
@@ -38,7 +60,12 @@ class Shelf
     private long top;
     private long right;
     private long bottom;
-    private ArrayList<Product> products;
+
+    public ArrayList<Product> getProducts() {
+        return products;
+    }
+
+    private ArrayList<Product> products ;
 
     public Shelf(long l, long t, long r, long b)
     {
@@ -52,6 +79,22 @@ class Shelf
     public void addProduct(Product p)
     {
         products.add(p);
+    }
+
+    public long getLeft() {
+        return left;
+    }
+
+    public long getTop() {
+        return top;
+    }
+
+    public long getRight() {
+        return right;
+    }
+
+    public long getBottom() {
+        return bottom;
     }
 }
 
@@ -67,6 +110,23 @@ public class PlanogramMeasurement {
     private long dolapHeight;
     private ArrayList<Shelf> shelves;
 
+    private long detectionImageWidth;
+    private long detectionImageHeight;
+    private int detectionImageScaledWidth;
+    private int detectionImageScaledHeight;
+
+    private long detectionCornersX1;
+    private long detectionCornersY1;
+    private long detectionCornersX2;
+    private long detectionCornersY2;
+    private long detectionCornersX3;
+    private long detectionCornersY3;
+    private long detectionCornersX4;
+    private long detectionCornersY4;
+
+    private long maxDetectionWidth = 640;
+    private double imageScaleRatio;
+
     public PlanogramMeasurement()
     {
 
@@ -80,7 +140,17 @@ public class PlanogramMeasurement {
 
     public void measurePlanogramCompliance(JSONObject detectionsJson)
     {
+        // Step 1: Interpret the detection json
         List<Product> detectedProductsList = interpretDetectionsJson(detectionsJson);
+        // Step 2: Create the color codes for all products in the detection json and planogram json
+        Dictionary<Long, IntBuffer> colorDictionary = createColorDictionary(detectedProductsList);
+        // Step 3: Create a canvas image for every detection
+        List<Mat> detectionCanvasList = createProductImages((int)detectionImageWidth, (int)detectionImageHeight,
+                detectedProductsList, colorDictionary);
+        // Step 4: Calculate the homography transformation
+        Mat warpedPlaongram = mapPlanogramToDetection(colorDictionary);
+        // Step 5: Calculate the pixelwise correspondence of the warped planogram with the detections.
+
         System.out.println("X");
     }
 
@@ -118,24 +188,22 @@ public class PlanogramMeasurement {
         // Get all shelves
         shelves = new ArrayList<>();
         JSONArray rafArray = (JSONArray)dolapObject.get("RAFLAR");
-        for(Object obj: rafArray)
-        {
-            JSONObject rafObj = (JSONObject)obj;
-            var shelf_left = (long)rafObj.get("X");
-            var shelf_top = (long)rafObj.get("Y");
-            var shelf_right = shelf_left + (long)rafObj.get("W");
-            var shelf_bottom = shelf_top + (long)rafObj.get("H");
+        for(Object obj: rafArray) {
+            JSONObject rafObj = (JSONObject) obj;
+            var shelf_left = (long) rafObj.get("X");
+            var shelf_top = (long) rafObj.get("Y");
+            var shelf_right = shelf_left + (long) rafObj.get("W");
+            var shelf_bottom = shelf_top + (long) rafObj.get("H");
 
             var shelf = new Shelf(shelf_left, shelf_top, shelf_right, shelf_bottom);
-            JSONArray productsInShelf = (JSONArray)rafObj.get("URUNLER");
-            for(Object pObj: productsInShelf)
-            {
-                JSONObject productObj = (JSONObject)pObj;
-                var product_left = (long)productObj.get("X");
-                var product_top = (long)productObj.get("Y");
-                var product_right = product_left + (long)productObj.get("W");
-                var product_bottom = product_top + (long)productObj.get("H");
-                var product_label = (long)productObj.get("SINIF");
+            JSONArray productsInShelf = (JSONArray) rafObj.get("URUNLER");
+            for (Object pObj : productsInShelf) {
+                JSONObject productObj = (JSONObject) pObj;
+                var product_left = (long) productObj.get("X");
+                var product_top = (long) productObj.get("Y");
+                var product_right = product_left + (long) productObj.get("W");
+                var product_bottom = product_top + (long) productObj.get("H");
+                var product_label = (long) productObj.get("SINIF");
                 var product = new Product(product_label, product_left, product_top, product_right, product_bottom);
                 shelf.addProduct(product);
             }
@@ -146,8 +214,16 @@ public class PlanogramMeasurement {
     private List<Product> interpretDetectionsJson(JSONObject detectionsJsonObject)
     {
         List<Product> detectedProductsList = new ArrayList<>();
-        long imageWidth = (long)detectionsJsonObject.get("image_width");
-        long imageHeight = (long)detectionsJsonObject.get("image_height");
+        detectionImageWidth = (long)detectionsJsonObject.get("image_width");
+        detectionImageHeight = (long)detectionsJsonObject.get("image_height");
+        detectionCornersX1 = (long)detectionsJsonObject.get("corner_x1");
+        detectionCornersY1 = (long)detectionsJsonObject.get("corner_y1");
+        detectionCornersX2 = (long)detectionsJsonObject.get("corner_x2");
+        detectionCornersY2 = (long)detectionsJsonObject.get("corner_y2");
+        detectionCornersX3 = (long)detectionsJsonObject.get("corner_x3");
+        detectionCornersY3 = (long)detectionsJsonObject.get("corner_y3");
+        detectionCornersX4 = (long)detectionsJsonObject.get("corner_x4");
+        detectionCornersY4 = (long)detectionsJsonObject.get("corner_y4");
         JSONArray productsInShelf = (JSONArray)detectionsJsonObject.get("detections");
         for(Object pObj: productsInShelf)
         {
@@ -165,18 +241,31 @@ public class PlanogramMeasurement {
         return detectedProductsList;
     }
 
-    private void createColorDictionary(HashSet<Long> idSet)
+    private Dictionary<Long, IntBuffer> createColorDictionary(List<Product> detectedProductsList)
     {
-        HashSet<ByteBuffer> colorSet = new HashSet<>();
-        Dictionary<Long, ByteBuffer> colorDictionary = new Hashtable<>();
+        HashSet<Long> idSet = new HashSet<>();
+        // Add planogram ids
+        for(var shelf: shelves)
+        {
+            for(var product: shelf.getProducts())
+            {
+                idSet.add(product.getLabel());
+            }
+        }
+        // Add detection ids
+        for(var product: detectedProductsList)
+        {
+            idSet.add(product.getLabel());
+        }
+        HashSet<IntBuffer> colorSet = new HashSet<>();
+        Dictionary<Long, IntBuffer> colorDictionary = new Hashtable<>();
         for(Long id: idSet)
         {
             while (true)
             {
-                byte [] colorArray = {(byte)(255.0 * Math.random()),
-                                      (byte)(255.0 * Math.random()),
-                                      (byte)(255.0 * Math.random())};
-                var colorBuffer = ByteBuffer.wrap(colorArray);
+                int [] colorArray = {(int)(255.0 * Math.random()), (int)(255.0 * Math.random()),
+                        (int)(255.0 * Math.random())};
+                var colorBuffer = IntBuffer.wrap(colorArray);
                 if (!colorSet.contains(colorBuffer))
                 {
                     colorSet.add(colorBuffer);
@@ -185,6 +274,84 @@ public class PlanogramMeasurement {
                 }
             }
         }
+        return colorDictionary;
+    }
 
+    private List<Mat> createProductImages(int width, int height,
+                                    List<Product> productList, Dictionary<Long, IntBuffer> colorDictionary)
+    {
+        // Draw a canvas for every detection:
+        // The reason is to eliminate the amount of occlusions between the detections.
+        imageScaleRatio = maxDetectionWidth / (double)width;
+        detectionImageScaledWidth = (int)maxDetectionWidth;
+        detectionImageScaledHeight = (int)(imageScaleRatio * height);
+        List<Mat> detectionCanvasList = new ArrayList<>();
+        // Core.multiply(canvas, new Scalar(255, 255, 255), canvas);
+        int productId = 0;
+        for(var product: productList) {
+            Mat canvas = Mat.zeros(detectionImageScaledHeight, detectionImageScaledWidth, CvType.CV_8UC3);
+            // Draw detection on the canvas
+            var productColorArray = colorDictionary.get(product.getLabel()).array();
+            var productColor = new Scalar(productColorArray[0], productColorArray[1], productColorArray[2]);
+            var topLeftPoint = new Point((int) (imageScaleRatio * (double) product.getLeft()),
+                    (int) (imageScaleRatio * (double) product.getTop()));
+            var bottomRightPoint = new Point((int) (imageScaleRatio * (double) product.getRight()),
+                    (int) (imageScaleRatio * (double) product.getBottom()));
+            Imgproc.rectangle(canvas, topLeftPoint, bottomRightPoint, productColor, -1);
+            detectionCanvasList.add(canvas);
+            Imgcodecs.imwrite("detection_product"+productId+".png", canvas);
+            productId++;
+        }
+        return detectionCanvasList;
+    }
+
+    private Mat mapPlanogramToDetection(Dictionary<Long, IntBuffer> colorDictionary)
+    {
+        //This is the destination
+        List<Point>  detectionPoints = new ArrayList<>();
+        MatOfPoint2f destinationMat = new MatOfPoint2f();
+        detectionPoints.add(new Point(imageScaleRatio * (double)detectionCornersX1, imageScaleRatio * (double)detectionCornersY1));
+        detectionPoints.add(new Point(imageScaleRatio * (double)detectionCornersX2, imageScaleRatio * (double)detectionCornersY2));
+        detectionPoints.add(new Point(imageScaleRatio * (double)detectionCornersX3, imageScaleRatio * (double)detectionCornersY3));
+        detectionPoints.add(new Point(imageScaleRatio * (double)detectionCornersX4, imageScaleRatio * (double)detectionCornersY4));
+        destinationMat.fromList(detectionPoints);
+
+        //This is the source
+        List<Point> planogramPoints = new ArrayList<>();
+        MatOfPoint2f sourceMat = new MatOfPoint2f();
+        planogramPoints.add(new Point((double)dolapLeft, (double)dolapTop));
+        planogramPoints.add(new Point((double)(dolapLeft + dolapWidth), (double)dolapTop));
+        planogramPoints.add(new Point((double)(dolapLeft + dolapWidth), (double)(dolapTop + dolapHeight)));
+        planogramPoints.add(new Point((double)dolapLeft, (double)(dolapTop + dolapHeight)));
+        sourceMat.fromList(planogramPoints);
+
+        Mat planogramImage = Mat.zeros((int)dolapHeight, (int)dolapWidth, CvType.CV_8UC3);
+        for(var shelf: shelves)
+        {
+            for(var product: shelf.getProducts())
+            {
+                // Draw products on the canvas
+                var productColorArray = colorDictionary.get(product.getLabel()).array();
+                var productColor = new Scalar(productColorArray[0], productColorArray[1], productColorArray[2]);
+                var topLeftPoint = new Point((int)product.getLeft(), (int)product.getTop());
+                var bottomRightPoint = new Point((int)product.getRight(), (int) product.getBottom());
+                Imgproc.rectangle(planogramImage, topLeftPoint, bottomRightPoint, productColor, -1);
+            }
+        }
+        //Visualize
+        Imgcodecs.imwrite("planogram_image.png", planogramImage);
+        //Calculate the homography
+        Mat H = Calib3d.findHomography( sourceMat, destinationMat, 0);
+        /*
+        System.out.println(sourceMat.dump());
+        System.out.println(destinationMat.dump());
+        System.out.println(H.dump());
+         */
+        // Apply the Homography: Planogram mapped to the incoming image
+        Mat warpedPlanogram = new Mat();
+        Imgproc.warpPerspective(planogramImage, warpedPlanogram, H,
+                new Size(detectionImageScaledWidth, detectionImageScaledHeight));
+        Imgcodecs.imwrite("warped_planogram_image.png", warpedPlanogram);
+        return warpedPlanogram;
     }
 }
