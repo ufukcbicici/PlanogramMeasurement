@@ -16,8 +16,11 @@ public class Main
 
         PlanogramMeasurement planogramMeasurement = new PlanogramMeasurement("src//planogram.json");
         var detections_json = PlanogramMeasurement.readJsonFromFile("src//detections_IMG_43699.json");
-        planogramMeasurement.measurePlanogramCompliance(detections_json);
-        int x = 42;
-
+        // planogramToProductCompliance, productToPlanogramCompliance
+        double [] results = planogramMeasurement.measurePlanogramCompliance(detections_json);
+        double planogramToProductCompliance = results[0];
+        double productToPlanogramCompliance = results[1];
+        System.out.println("planogramToProductCompliance:"+planogramToProductCompliance);
+        System.out.println("productToPlanogramCompliance:"+productToPlanogramCompliance);
     }
 }

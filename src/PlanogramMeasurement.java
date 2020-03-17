@@ -1,19 +1,16 @@
-import org.json.simple.*;
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 import org.opencv.calib3d.Calib3d;
 import org.opencv.core.*;
-import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
-import java.nio.DoubleBuffer;
-import java.nio.IntBuffer;
-import java.util.*;
-import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 class Product
 {
@@ -144,22 +141,22 @@ public class PlanogramMeasurement {
         interpretPlanogramJson();
     }
 
-    public void measurePlanogramCompliance(JSONObject detectionsJson)
+    public double [] measurePlanogramCompliance(JSONObject detectionsJson)
     {
         // Step 1: Interpret the detection json
         List<Product> detectedProductsList = interpretDetectionsJson(detectionsJson);
-        // Step 2: Create the color codes for all products in the detection json and planogram json
-        // Dictionary<Long, IntBuffer> colorDictionary = createColorDictionary(detectedProductsList);
-        // Step 3: Create a canvas image for every detection
+        // Step 2: Create a canvas image for every detection
         createProductImages((int)detectionImageWidth, (int)detectionImageHeight, detectedProductsList);
-        // Step 4: Calculate the homography transformation
+        // Step 3: Calculate the homography transformation
         calculateHomographyMapping();
-        // Step 5: Measure planogram compliance
+        // Step 4: Measure planogram compliance
         // Planogram vs Products
-        calculateCompliance(planogramProducts, detectedProductsList);
+        double planogramToProductCompliance = calculateCompliance(planogramProducts, detectedProductsList);
         // Products vs Planogram
-        calculateCompliance(detectedProductsList, planogramProducts);
-        System.out.println("X");
+        double productToPlanogramCompliance = calculateCompliance(detectedProductsList, planogramProducts);
+        double [] resultArray = {planogramToProductCompliance, productToPlanogramCompliance};
+        clearMemory();
+        return resultArray;
     }
 
     public static JSONObject readJsonFromFile(String json_path)
@@ -269,7 +266,7 @@ public class PlanogramMeasurement {
                     (int) (imageScaleRatio * (double) product.getBottom()));
             Imgproc.rectangle(canvas, topLeftPoint, bottomRightPoint, new Scalar(255), -1);
             product.setImage(canvas);
-            Imgcodecs.imwrite("detection_product"+productId+".png", canvas);
+            //Imgcodecs.imwrite("detection_product"+productId+".png", canvas);
             productId++;
         }
     }
@@ -310,19 +307,21 @@ public class PlanogramMeasurement {
                 Imgproc.warpPerspective(planogramImage, warpedPlanogram, H,
                         new Size(detectionImageScaledWidth, detectionImageScaledHeight));
                 product.setImage(warpedPlanogram);
-                Imgcodecs.imwrite("warped_planogram_image_product_"+productId+".png", warpedPlanogram);
+                //Imgcodecs.imwrite("warped_planogram_image_product_"+productId+".png", warpedPlanogram);
                 productId++;
             }
         }
     }
 
     // Compare list1 vs list2
-    private void calculateCompliance(List<Product> list1, List<Product> list2)
+    private double calculateCompliance(List<Product> list1, List<Product> list2)
     {
         int productId = 0;
+        double totalIoU = 0.0;
         for(var product1: list1)
         {
-            System.out.println("Product:"+productId);
+            //System.out.println("Product:"+productId);
+            double maxIoUWithCorrectProduct = 0.0;
             for(var product2: list2)
             {
                 // Convert two images to binary
@@ -339,13 +338,23 @@ public class PlanogramMeasurement {
                 Core.bitwise_and(binaryObject1, binaryObject2, intersectionImage);
                 //Imgcodecs.imwrite("intersectionImage.png", intersectionImage);
                 // Calculate pixelwise IoU metric
-                var numOfIntersectionPixels = Core.sumElems(intersectionImage).val[0] / 255.0;
-                var numOfUnionPixels = Core.sumElems(unionImage).val[0] / 255.0;
-                var IoU = numOfIntersectionPixels / numOfUnionPixels;
-                System.out.println("IoU="+IoU);
+                double IoU = 0.0;
+                if(product1.getLabel() == product2.getLabel()) {
+                    var numOfIntersectionPixels = Core.sumElems(intersectionImage).val[0] / 255.0;
+                    var numOfUnionPixels = Core.sumElems(unionImage).val[0] / 255.0;
+                    IoU = numOfIntersectionPixels / numOfUnionPixels;
+                    if (IoU > maxIoUWithCorrectProduct)
+                    {
+                        maxIoUWithCorrectProduct = IoU;
+                    }
+                }
+                //System.out.println("IoU="+IoU);
             }
             productId++;
+            totalIoU += maxIoUWithCorrectProduct;
         }
+        double meanIoU = totalIoU / list1.size();
+        return meanIoU;
     }
 
     private void clearMemory()
