@@ -114,6 +114,7 @@ public class PlanogramMeasurement {
     private long dolapWidth;
     private long dolapHeight;
     private ArrayList<Shelf> shelves;
+    private ArrayList<Product> planogramProducts;
 
     private long detectionImageWidth;
     private long detectionImageHeight;
@@ -148,13 +149,16 @@ public class PlanogramMeasurement {
         // Step 1: Interpret the detection json
         List<Product> detectedProductsList = interpretDetectionsJson(detectionsJson);
         // Step 2: Create the color codes for all products in the detection json and planogram json
-        Dictionary<Long, IntBuffer> colorDictionary = createColorDictionary(detectedProductsList);
+        // Dictionary<Long, IntBuffer> colorDictionary = createColorDictionary(detectedProductsList);
         // Step 3: Create a canvas image for every detection
-        createProductImages((int)detectionImageWidth, (int)detectionImageHeight, detectedProductsList, colorDictionary);
+        createProductImages((int)detectionImageWidth, (int)detectionImageHeight, detectedProductsList);
         // Step 4: Calculate the homography transformation
-        calculateCompliance(detectedProductsList, colorDictionary);
-        // Step 5: Calculate the pixelwise correspondence of the warped planogram with the detections.
-        // calculateCompliance(warpedPlaongram, detectionCanvasList);
+        calculateHomographyMapping();
+        // Step 5: Measure planogram compliance
+        // Planogram vs Products
+        calculateCompliance(planogramProducts, detectedProductsList);
+        // Products vs Planogram
+        calculateCompliance(detectedProductsList, planogramProducts);
         System.out.println("X");
     }
 
@@ -191,6 +195,7 @@ public class PlanogramMeasurement {
         dolapBottom = dolapTop + dolapHeight;
         // Get all shelves
         shelves = new ArrayList<>();
+        planogramProducts = new ArrayList<>();
         JSONArray rafArray = (JSONArray)dolapObject.get("RAFLAR");
         for(Object obj: rafArray) {
             JSONObject rafObj = (JSONObject) obj;
@@ -210,6 +215,7 @@ public class PlanogramMeasurement {
                 var product_label = (long) productObj.get("SINIF");
                 var product = new Product(product_label, product_left, product_top, product_right, product_bottom);
                 shelf.addProduct(product);
+                planogramProducts.add(product);
             }
             shelves.add(shelf);
         }
@@ -245,44 +251,7 @@ public class PlanogramMeasurement {
         return detectedProductsList;
     }
 
-    private Dictionary<Long, IntBuffer> createColorDictionary(List<Product> detectedProductsList)
-    {
-        HashSet<Long> idSet = new HashSet<>();
-        // Add planogram ids
-        for(var shelf: shelves)
-        {
-            for(var product: shelf.getProducts())
-            {
-                idSet.add(product.getLabel());
-            }
-        }
-        // Add detection ids
-        for(var product: detectedProductsList)
-        {
-            idSet.add(product.getLabel());
-        }
-        HashSet<IntBuffer> colorSet = new HashSet<>();
-        Dictionary<Long, IntBuffer> colorDictionary = new Hashtable<>();
-        for(Long id: idSet)
-        {
-            while (true)
-            {
-                int [] colorArray = {(int)(255.0 * Math.random()), (int)(255.0 * Math.random()),
-                        (int)(255.0 * Math.random())};
-                var colorBuffer = IntBuffer.wrap(colorArray);
-                if (!colorSet.contains(colorBuffer))
-                {
-                    colorSet.add(colorBuffer);
-                    colorDictionary.put(id, colorBuffer);
-                    break;
-                }
-            }
-        }
-        return colorDictionary;
-    }
-
-    private void createProductImages(int width, int height,
-                                    List<Product> productList, Dictionary<Long, IntBuffer> colorDictionary)
+    private void createProductImages(int width, int height, List<Product> productList)
     {
         // Draw a canvas for every detection:
         // The reason is to eliminate the amount of occlusions between the detections.
@@ -292,22 +261,20 @@ public class PlanogramMeasurement {
         // Core.multiply(canvas, new Scalar(255, 255, 255), canvas);
         int productId = 0;
         for(var product: productList) {
-            Mat canvas = Mat.zeros(detectionImageScaledHeight, detectionImageScaledWidth, CvType.CV_8UC3);
+            Mat canvas = Mat.zeros(detectionImageScaledHeight, detectionImageScaledWidth, CvType.CV_8U);
             // Draw detection on the canvas
-            var productColorArray = colorDictionary.get(product.getLabel()).array();
-            var productColor = new Scalar(productColorArray[0], productColorArray[1], productColorArray[2]);
             var topLeftPoint = new Point((int) (imageScaleRatio * (double) product.getLeft()),
                     (int) (imageScaleRatio * (double) product.getTop()));
             var bottomRightPoint = new Point((int) (imageScaleRatio * (double) product.getRight()),
                     (int) (imageScaleRatio * (double) product.getBottom()));
-            Imgproc.rectangle(canvas, topLeftPoint, bottomRightPoint, productColor, -1);
+            Imgproc.rectangle(canvas, topLeftPoint, bottomRightPoint, new Scalar(255), -1);
             product.setImage(canvas);
             Imgcodecs.imwrite("detection_product"+productId+".png", canvas);
             productId++;
         }
     }
 
-    private void calculateCompliance(List<Product> detectedProductList, Dictionary<Long, IntBuffer> colorDictionary)
+    private void calculateHomographyMapping()
     {
         //This is the destination
         List<Point>  detectionPoints = new ArrayList<>();
@@ -329,75 +296,74 @@ public class PlanogramMeasurement {
 
         //Calculate the homography
         Mat H = Calib3d.findHomography( sourceMat, destinationMat, 0);
-
         int productId = 0;
         for(var shelf: shelves)
         {
-            for(var product: shelf.getProducts())
+            for (var product : shelf.getProducts())
             {
-                System.out.println("Product:"+productId);
                 // Draw a single product on the canvas
-                Mat planogramImage = Mat.zeros((int)dolapHeight, (int)dolapWidth, CvType.CV_8UC3);
-                var productColorArray = colorDictionary.get(product.getLabel()).array();
-                var productColor = new Scalar(productColorArray[0], productColorArray[1], productColorArray[2]);
+                Mat planogramImage = Mat.zeros((int)dolapHeight, (int)dolapWidth, CvType.CV_8U);
                 var topLeftPoint = new Point((int)product.getLeft(), (int)product.getTop());
                 var bottomRightPoint = new Point((int)product.getRight(), (int) product.getBottom());
                 Mat warpedPlanogram = new Mat();
-                Imgproc.rectangle(planogramImage, topLeftPoint, bottomRightPoint, productColor, -1);
+                Imgproc.rectangle(planogramImage, topLeftPoint, bottomRightPoint, new Scalar(255), -1);
                 Imgproc.warpPerspective(planogramImage, warpedPlanogram, H,
-                new Size(detectionImageScaledWidth, detectionImageScaledHeight));
-                // Imgcodecs.imwrite("warped_planogram_image_product_"+productId+".png", warpedPlanogram);
-                // Compare each planogram image to every product image
-                for(var detectedProduct: detectedProductList)
-                {
-                    // Convert two images to binary
-                    Mat binaryPlanogramObject = PlanogramMeasurement.binarizeImage(warpedPlanogram);
-                    Mat binaryProductObject = PlanogramMeasurement.binarizeImage(detectedProduct.getImage());
-                    //Imgcodecs.imwrite("planogram_binary.png", binaryPlanogramObject);
-                    //Imgcodecs.imwrite("object_binary.png", binaryProductObject);
-                    // Take the union by bitwise OR.
-                    Mat unionImage = new Mat();
-                    Core.bitwise_or(binaryPlanogramObject, binaryProductObject, unionImage);
-                    //Imgcodecs.imwrite("unionImage.png", unionImage);
-                    // Take the intersection by bitwise AND.
-                    Mat intersectionImage = new Mat();
-                    Core.bitwise_and(binaryPlanogramObject, binaryProductObject, intersectionImage);
-                    //Imgcodecs.imwrite("intersectionImage.png", intersectionImage);
-                    // Calculate pixelwise IoU metric
-                    var numOfIntersectionPixels = Core.sumElems(intersectionImage).val[0] / 255.0;
-                    var numOfUnionPixels = Core.sumElems(unionImage).val[0] / 255.0;
-                    var IoU = numOfIntersectionPixels / numOfUnionPixels;
-                    System.out.println("IoU="+IoU);
-                }
+                        new Size(detectionImageScaledWidth, detectionImageScaledHeight));
+                product.setImage(warpedPlanogram);
+                Imgcodecs.imwrite("warped_planogram_image_product_"+productId+".png", warpedPlanogram);
                 productId++;
             }
         }
-        System.out.print("X");
     }
 
-//    private void calculateCompliance(Mat warpedPlanogram, List<Mat> detectionList)
-//    {
-//        for(Mat detectionImage: detectionList)
-//        {
-//            assert warpedPlanogram.rows() == detectionImage.rows() && warpedPlanogram.cols() == detectionImage.cols();
-//        }
-//        // Convert the warpedPlanogram to a binary image: Background 0 foreground 1
-//        Mat grayscalePlanogram = new Mat();
-//        Imgproc.cvtColor(warpedPlanogram, grayscalePlanogram, Imgproc.COLOR_BGR2GRAY);
-//        Imgcodecs.imwrite("grayscale_planogram.png", grayscalePlanogram);
-//        Mat binaryPlanogram = new Mat();
-//        Imgproc.threshold(grayscalePlanogram, binaryPlanogram, 0 , 255, Imgproc.THRESH_BINARY);
-//        Imgcodecs.imwrite("binary_planogram.png", binaryPlanogram);
-//
-//    }
+    // Compare list1 vs list2
+    private void calculateCompliance(List<Product> list1, List<Product> list2)
+    {
+        int productId = 0;
+        for(var product1: list1)
+        {
+            System.out.println("Product:"+productId);
+            for(var product2: list2)
+            {
+                // Convert two images to binary
+                Mat binaryObject1 = PlanogramMeasurement.binarizeImage(product1.getImage());
+                Mat binaryObject2 = PlanogramMeasurement.binarizeImage(product2.getImage());
+                //Imgcodecs.imwrite("planogram_binary.png", binaryObject1);
+                //Imgcodecs.imwrite("object_binary.png", binaryObject2);
+                // Take the union by bitwise OR.
+                Mat unionImage = new Mat();
+                Core.bitwise_or(binaryObject1, binaryObject2, unionImage);
+                //Imgcodecs.imwrite("unionImage.png", unionImage);
+                // Take the intersection by bitwise AND.
+                Mat intersectionImage = new Mat();
+                Core.bitwise_and(binaryObject1, binaryObject2, intersectionImage);
+                //Imgcodecs.imwrite("intersectionImage.png", intersectionImage);
+                // Calculate pixelwise IoU metric
+                var numOfIntersectionPixels = Core.sumElems(intersectionImage).val[0] / 255.0;
+                var numOfUnionPixels = Core.sumElems(unionImage).val[0] / 255.0;
+                var IoU = numOfIntersectionPixels / numOfUnionPixels;
+                System.out.println("IoU="+IoU);
+            }
+            productId++;
+        }
+    }
+
+    private void clearMemory()
+    {
+        for(var shelf: shelves) {
+            for (var product : shelf.getProducts()) {
+                product.setImage(null);
+            }
+        }
+    }
 
     // Utility Functions for low level image processing
-    private static Mat binarizeImage(Mat colorImage)
+    private static Mat binarizeImage(Mat image)
     {
-        Mat grayscale = new Mat();
-        Imgproc.cvtColor(colorImage, grayscale, Imgproc.COLOR_BGR2GRAY);
+//        Mat grayscale = new Mat();
+//        Imgproc.cvtColor(colorImage, grayscale, Imgproc.COLOR_BGR2GRAY);
         Mat binary = new Mat();
-        Imgproc.threshold(grayscale, binary, 0 , 255, Imgproc.THRESH_BINARY);
+        Imgproc.threshold(image, binary, 0 , 255, Imgproc.THRESH_BINARY);
         return binary;
     }
 }
