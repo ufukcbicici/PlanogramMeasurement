@@ -4,6 +4,7 @@ import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 import org.opencv.calib3d.Calib3d;
 import org.opencv.core.*;
+import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
 import java.io.FileNotFoundException;
@@ -141,22 +142,29 @@ public class PlanogramMeasurement {
         interpretPlanogramJson();
     }
 
-    public double [] measurePlanogramCompliance(JSONObject detectionsJson)
+    public double [] measurePlanogramCompliance(JSONObject detectionsJson, String detectionImgFile)
     {
+        // Step 0: Open the detectionImage
+        Mat detectionImg = Imgcodecs.imread(detectionImgFile);
         // Step 1: Interpret the detection json
         List<Product> detectedProductsList = interpretDetectionsJson(detectionsJson);
         // Step 2: Create a canvas image for every detection
         createProductImages((int)detectionImageWidth, (int)detectionImageHeight, detectedProductsList);
         // Step 3: Calculate the homography transformation
         calculateHomographyMapping();
-        // Step 4: Measure planogram compliance
+        // Step 4: Map planogram onto detections.
+        mapPlanogramToDetections(detectionImg, planogramProducts, detectedProductsList);
+        // Step 5: Measure planogram compliance
         // Planogram vs Products
-        double planogramToProductCompliance = calculateCompliance(planogramProducts, detectedProductsList);
+        double [] planogramToProductCompliances = calculateCompliance(planogramProducts, detectedProductsList);
         // Products vs Planogram
-        double productToPlanogramCompliance = calculateCompliance(detectedProductsList, planogramProducts);
-        double [] resultArray = {planogramToProductCompliance, productToPlanogramCompliance};
+        double [] productToPlanogramCompliances = calculateCompliance(detectedProductsList, planogramProducts);
+        // double finalCompliance = 0.5*(planogramToProductCompliance + productToPlanogramCompliance);
+        double [] detectionsArr = {planogramToProductCompliances[0], planogramToProductCompliances[1],
+                productToPlanogramCompliances[0], productToPlanogramCompliances[1]};
+        // Map planogram onto the detection image
         clearMemory();
-        return resultArray;
+        return detectionsArr;
     }
 
     public static JSONObject readJsonFromFile(String json_path)
@@ -314,14 +322,18 @@ public class PlanogramMeasurement {
     }
 
     // Compare list1 vs list2
-    private double calculateCompliance(List<Product> list1, List<Product> list2)
+    private double [] calculateCompliance(List<Product> list1, List<Product> list2)
     {
         int productId = 0;
         double totalIoU = 0.0;
+        double totalCummulativeIoU = 0.0;
+        List<Double> ioUList = new ArrayList<>();
+        List<Double> cummulativeIoUList = new ArrayList<>();
         for(var product1: list1)
         {
             //System.out.println("Product:"+productId);
             double maxIoUWithCorrectProduct = 0.0;
+            double totalIoUWithCorrectProducts = 0.0;
             for(var product2: list2)
             {
                 // Convert two images to binary
@@ -343,6 +355,7 @@ public class PlanogramMeasurement {
                     var numOfIntersectionPixels = Core.sumElems(intersectionImage).val[0] / 255.0;
                     var numOfUnionPixels = Core.sumElems(unionImage).val[0] / 255.0;
                     IoU = numOfIntersectionPixels / numOfUnionPixels;
+                    totalIoUWithCorrectProducts = Math.min(1.0, totalIoUWithCorrectProducts + IoU);
                     if (IoU > maxIoUWithCorrectProduct)
                     {
                         maxIoUWithCorrectProduct = IoU;
@@ -351,10 +364,82 @@ public class PlanogramMeasurement {
                 //System.out.println("IoU="+IoU);
             }
             productId++;
+            ioUList.add(maxIoUWithCorrectProduct);
+            cummulativeIoUList.add(totalIoUWithCorrectProducts);
             totalIoU += maxIoUWithCorrectProduct;
+            totalCummulativeIoU += totalIoUWithCorrectProducts;
         }
         double meanIoU = totalIoU / list1.size();
-        return meanIoU;
+        double meanCummulativeIoU = totalCummulativeIoU / list1.size();
+        double [] compliances = {meanIoU, meanCummulativeIoU};
+        return compliances;
+    }
+
+    private void mapPlanogramToDetections(Mat detectionImage,
+                                          List<Product> planogramProducts, List<Product> detectionProducts)
+    {
+        Mat red = Mat.zeros(detectionImage.rows(), detectionImage.cols(), detectionImage.type());
+        red.setTo(new Scalar(0, 0, 255));
+        Mat green = Mat.zeros(detectionImage.rows(), detectionImage.cols(), detectionImage.type());
+        green.setTo(new Scalar(0, 255, 0));
+        Mat planogramComplianceImg = Mat.zeros(detectionImage.rows(), detectionImage.cols(), detectionImage.type());
+        Mat alphaMask = Mat.ones(detectionImage.rows(), detectionImage.cols(), CvType.CV_32FC3);
+        alphaMask.setTo(new Scalar(1.0, 1.0, 1.0));
+        Mat alphaBlend = Mat.zeros(detectionImage.rows(), detectionImage.cols(), CvType.CV_32FC3);
+        alphaBlend.setTo(new Scalar(0.5, 0.5, 0.5));
+        for(var planogramProduct: planogramProducts)
+        {
+            double maxIoUWithCorrectProduct = 0.0;
+            Mat bestIntersection = null;
+            for(var detectionProduct: detectionProducts)
+            {
+                // Convert two images to binary
+                Mat binaryObject1 = PlanogramMeasurement.binarizeImage(planogramProduct.getImage());
+                Mat binaryObject2 = PlanogramMeasurement.binarizeImage(detectionProduct.getImage());
+                //Imgcodecs.imwrite("planogram_binary.png", binaryObject1);
+                //Imgcodecs.imwrite("object_binary.png", binaryObject2);
+                // Take the union by bitwise OR.
+                Mat unionImage = new Mat();
+                Core.bitwise_or(binaryObject1, binaryObject2, unionImage);
+                //Imgcodecs.imwrite("unionImage.png", unionImage);
+                // Take the intersection by bitwise AND.
+                Mat intersectionImage = new Mat();
+                Core.bitwise_and(binaryObject1, binaryObject2, intersectionImage);
+                // Calculate pixelwise IoU metric
+                double IoU = 0.0;
+                if(planogramProduct.getLabel() == detectionProduct.getLabel())
+                {
+                    var numOfIntersectionPixels = Core.sumElems(intersectionImage).val[0] / 255.0;
+                    var numOfUnionPixels = Core.sumElems(unionImage).val[0] / 255.0;
+                    IoU = numOfIntersectionPixels / numOfUnionPixels;
+                    if (IoU > maxIoUWithCorrectProduct)
+                    {
+                        maxIoUWithCorrectProduct = IoU;
+                        bestIntersection = intersectionImage;
+                    }
+                }
+            }
+            Mat resizedMask = new Mat();
+            Imgproc.resize(planogramProduct.getImage(), resizedMask,
+                    new Size(detectionImage.cols(), detectionImage.rows()));
+            red.copyTo( planogramComplianceImg, resizedMask );
+            alphaBlend.copyTo(alphaMask, resizedMask);
+            if(bestIntersection!=null) {
+                Imgproc.resize(bestIntersection, resizedMask,
+                        new Size(detectionImage.cols(), detectionImage.rows()));
+                green.copyTo(planogramComplianceImg, resizedMask);
+            }
+        }
+        Mat floatDetection = new Mat();
+        detectionImage.convertTo(floatDetection, CvType.CV_32FC3);
+        Core.multiply(floatDetection, alphaMask, floatDetection);
+        Mat floatPlanogramComplianceImg = new Mat();
+        planogramComplianceImg.convertTo(floatPlanogramComplianceImg, CvType.CV_32FC3);
+        Core.multiply(floatPlanogramComplianceImg, alphaMask, floatPlanogramComplianceImg);
+        Mat blendedImg = new Mat();
+        Core.add(floatDetection, floatPlanogramComplianceImg, blendedImg);
+        blendedImg.convertTo(blendedImg, CvType.CV_8UC3);
+        Imgcodecs.imwrite("detectionImageBlended.png", blendedImg);
     }
 
     private void clearMemory()
