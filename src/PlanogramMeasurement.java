@@ -15,11 +15,11 @@ import java.util.List;
 
 class Product
 {
-    private long label;
-    private long left;
-    private long top;
-    private long right;
-    private long bottom;
+    private final long label;
+    private final long left;
+    private final long top;
+    private final long right;
+    private final long bottom;
     private Mat image;
 
     public Product(long _label, long l, long t, long r, long b)
@@ -128,17 +128,22 @@ public class PlanogramMeasurement {
     private long detectionCornersX4;
     private long detectionCornersY4;
 
-    private long maxDetectionWidth = 640;
+    private final long maxDetectionWidth = 640;
     private double imageScaleRatio;
+
+    private String compliancePath;
+    private String imagePath;
 
     public PlanogramMeasurement()
     {
 
     }
 
-    public PlanogramMeasurement(String planogram_file_path)
+    public PlanogramMeasurement(String planogram_file_path, String compliance_path, String image_path)
     {
         planogramJson = PlanogramMeasurement.readJsonFromFile(planogram_file_path);
+        compliancePath = compliance_path;
+        imagePath = image_path;
         interpretPlanogramJson();
     }
 
@@ -149,19 +154,18 @@ public class PlanogramMeasurement {
         // Step 1: Interpret the detection json
         List<Product> detectedProductsList = interpretDetectionsJson(detectionsJson);
         // Step 2: Create a canvas image for every detection
-        createProductImages((int)detectionImageWidth, (int)detectionImageHeight, detectedProductsList);
+        createProductImages(detectionImg, (int)detectionImageWidth, (int)detectionImageHeight, detectedProductsList);
         // Step 3: Calculate the homography transformation
         calculateHomographyMapping();
         // Step 4: Map planogram onto detections.
         mapPlanogramToDetections(detectionImg, planogramProducts, detectedProductsList);
         // Step 5: Measure planogram compliance
         // Planogram vs Products
-        double [] planogramToProductCompliances = calculateCompliance(planogramProducts, detectedProductsList);
+        double planogramToProductCompliances = calculateCompliance(planogramProducts, detectedProductsList);
         // Products vs Planogram
-        double [] productToPlanogramCompliances = calculateCompliance(detectedProductsList, planogramProducts);
+        double productToPlanogramCompliances = calculateCompliance(detectedProductsList, planogramProducts);
         // double finalCompliance = 0.5*(planogramToProductCompliance + productToPlanogramCompliance);
-        double [] detectionsArr = {planogramToProductCompliances[0], planogramToProductCompliances[1],
-                productToPlanogramCompliances[0], productToPlanogramCompliances[1]};
+        double [] detectionsArr = {planogramToProductCompliances, productToPlanogramCompliances};
         // Map planogram onto the detection image
         clearMemory();
         return detectionsArr;
@@ -256,7 +260,7 @@ public class PlanogramMeasurement {
         return detectedProductsList;
     }
 
-    private void createProductImages(int width, int height, List<Product> productList)
+    private void createProductImages(Mat mainImage, int width, int height, List<Product> productList)
     {
         // Draw a canvas for every detection:
         // The reason is to eliminate the amount of occlusions between the detections.
@@ -264,6 +268,7 @@ public class PlanogramMeasurement {
         detectionImageScaledWidth = (int)maxDetectionWidth;
         detectionImageScaledHeight = (int)(imageScaleRatio * height);
         // Core.multiply(canvas, new Scalar(255, 255, 255), canvas);
+        var detectionImage = mainImage.clone();
         int productId = 0;
         for(var product: productList) {
             Mat canvas = Mat.zeros(detectionImageScaledHeight, detectionImageScaledWidth, CvType.CV_8U);
@@ -273,10 +278,17 @@ public class PlanogramMeasurement {
             var bottomRightPoint = new Point((int) (imageScaleRatio * (double) product.getRight()),
                     (int) (imageScaleRatio * (double) product.getBottom()));
             Imgproc.rectangle(canvas, topLeftPoint, bottomRightPoint, new Scalar(255), -1);
+            Imgproc.rectangle(detectionImage, topLeftPoint, bottomRightPoint, new Scalar(255, 255, 255), 3);
+            var textBottomLeft = new Point(
+                    topLeftPoint.x + (int)((bottomRightPoint.x - topLeftPoint.x)*0.2),
+                    topLeftPoint.y + (int)((bottomRightPoint.y - topLeftPoint.y)*0.8));
+            Imgproc.putText(detectionImage, Long.toString(product.getLabel()), textBottomLeft,
+                    1, 2.0, new Scalar(255,255,255));
             product.setImage(canvas);
-            //Imgcodecs.imwrite("detection_product"+productId+".png", canvas);
+            //
             productId++;
         }
+        Imgcodecs.imwrite("image_with_detections.png", detectionImage);
     }
 
     private void calculateHomographyMapping()
@@ -322,7 +334,7 @@ public class PlanogramMeasurement {
     }
 
     // Compare list1 vs list2
-    private double [] calculateCompliance(List<Product> list1, List<Product> list2)
+    private double calculateCompliance(List<Product> list1, List<Product> list2)
     {
         int productId = 0;
         double totalIoU = 0.0;
@@ -339,16 +351,16 @@ public class PlanogramMeasurement {
                 // Convert two images to binary
                 Mat binaryObject1 = PlanogramMeasurement.binarizeImage(product1.getImage());
                 Mat binaryObject2 = PlanogramMeasurement.binarizeImage(product2.getImage());
-                //Imgcodecs.imwrite("planogram_binary.png", binaryObject1);
-                //Imgcodecs.imwrite("object_binary.png", binaryObject2);
+                // Imgcodecs.imwrite("planogram_binary.png", binaryObject1);
+                // Imgcodecs.imwrite("object_binary.png", binaryObject2);
                 // Take the union by bitwise OR.
                 Mat unionImage = new Mat();
                 Core.bitwise_or(binaryObject1, binaryObject2, unionImage);
-                //Imgcodecs.imwrite("unionImage.png", unionImage);
+                // Imgcodecs.imwrite("unionImage.png", unionImage);
                 // Take the intersection by bitwise AND.
                 Mat intersectionImage = new Mat();
                 Core.bitwise_and(binaryObject1, binaryObject2, intersectionImage);
-                //Imgcodecs.imwrite("intersectionImage.png", intersectionImage);
+                // Imgcodecs.imwrite("intersectionImage.png", intersectionImage);
                 // Calculate pixelwise IoU metric
                 double IoU = 0.0;
                 if(product1.getLabel() == product2.getLabel()) {
@@ -371,8 +383,9 @@ public class PlanogramMeasurement {
         }
         double meanIoU = totalIoU / list1.size();
         double meanCummulativeIoU = totalCummulativeIoU / list1.size();
-        double [] compliances = {meanIoU, meanCummulativeIoU};
-        return compliances;
+//        double [] compliances = {meanIoU, meanCummulativeIoU};
+//        return compliances;
+        return meanCummulativeIoU;
     }
 
     private void mapPlanogramToDetections(Mat detectionImage,
@@ -430,6 +443,17 @@ public class PlanogramMeasurement {
                 green.copyTo(planogramComplianceImg, resizedMask);
             }
         }
+        // Draw detections
+        for(var detectionProduct: detectionProducts)
+        {
+            // Draw detection on the canvas
+            var tlP = new Point((int) (imageScaleRatio * (double) detectionProduct.getLeft()),
+                    (int) (imageScaleRatio * (double) detectionProduct.getTop()));
+            var brP = new Point((int) (imageScaleRatio * (double) detectionProduct.getRight()),
+                    (int) (imageScaleRatio * (double) detectionProduct.getBottom()));
+            Imgproc.rectangle(detectionImage, tlP, brP, new Scalar(255, 255, 255), 3);
+        }
+        // Draw planogram locations and intersections
         Mat floatDetection = new Mat();
         detectionImage.convertTo(floatDetection, CvType.CV_32FC3);
         Core.multiply(floatDetection, alphaMask, floatDetection);
@@ -439,7 +463,7 @@ public class PlanogramMeasurement {
         Mat blendedImg = new Mat();
         Core.add(floatDetection, floatPlanogramComplianceImg, blendedImg);
         blendedImg.convertTo(blendedImg, CvType.CV_8UC3);
-        Imgcodecs.imwrite("detectionImageBlended.png", blendedImg);
+        Imgcodecs.imwrite(imagePath+"\\detectionImageBlended.png", blendedImg);
     }
 
     private void clearMemory()
